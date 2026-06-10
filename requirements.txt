@@ -1,0 +1,18 @@
+# Data Parsing and Manipulation
+pandas
+numpy
+ujson
+
+# Machine Learning and Evaluation
+scikit-learn
+imbalanced-learn
+
+# Deep Learning (PyTorch is excellent for multi-horizon sequences)
+torch
+torchvision
+torchaudio
+
+# Visualization and Experimentation
+matplotlib
+seaborn
+jupyter

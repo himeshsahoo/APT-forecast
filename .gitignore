@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+
+# Large local datasets/artifacts
+*.npy
+AIA-1-25.ecar-last.json/
