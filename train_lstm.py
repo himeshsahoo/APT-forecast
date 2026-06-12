@@ -13,7 +13,6 @@ class APTForecaster(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         
-        # LSTM layer with recurrent dropout (only applies if num_layers > 1)
         self.lstm = nn.LSTM(
             input_size, 
             hidden_size, 
@@ -22,80 +21,76 @@ class APTForecaster(nn.Module):
             dropout=dropout_prob if num_layers > 1 else 0.0
         )
         
-        # Explicit dropout layer before the final classification step
         self.fc_dropout = nn.Dropout(p=dropout_prob)
-        
         self.fc = nn.Linear(hidden_size, 1)
-        self.sigmoid = nn.Sigmoid()
+        # REMOVED Sigmoid layer - BCEWithLogitsLoss handles this natively for better stability
         
     def forward(self, x):
-        # Forward pass through the LSTM
         out, _ = self.lstm(x)
-        
-        # Pull the final time-step vector representing the sequence context
         out = out[:, -1, :] 
-        
-        # Apply regularization before passing to the linear layer
         out = self.fc_dropout(out)
-        out = self.fc(out)
-        out = self.sigmoid(out)
+        out = self.fc(out) 
+        # Output is now raw "logits", not probabilities
         return out
 
 # 2. Define the Evaluation Function
 def evaluate_model(model, dataloader):
     print("\n--- Starting Model Evaluation ---")
-    model.eval()  # Lock the model weights and disable dropout for testing
+    model.eval()  
     
     all_preds = []
     all_targets = []
     
-    # Disable gradient calculation to save memory and speed up testing
     with torch.no_grad():
         for sequences, labels in dataloader:
             outputs = model(sequences)
             
+            # Since we removed Sigmoid from the model, we apply it manually here for evaluation
+            probabilities = torch.sigmoid(outputs)
+            
             # Convert probabilities to strict 0 or 1 predictions (0.5 threshold)
-            predictions = (outputs >= 0.5).float()
+            predictions = (probabilities >= 0.5).float()
             
             all_preds.extend(predictions.numpy())
             all_targets.extend(labels.numpy())
             
-    # Suppress the zero-division warning we expect from having only 1 class right now
     warnings.filterwarnings('ignore') 
     
     print("\nConfusion Matrix:")
     print(confusion_matrix(all_targets, all_preds))
     
     print("\nClassification Report (Precision, Recall, F1):")
-    # Added labels=[0, 1] to prevent crashes when a class is missing from the batch
     print(classification_report(all_targets, all_preds, labels=[0, 1], target_names=['Benign (0)', 'Malicious (1)']))
 
-## 3. The Main Training Loop
+# 3. The Main Training Loop
 def train_model():
-    print("Loading prepped tensor data...")
-    # Load Training Data
+    print("Loading pure tensor data...")
     X_train = np.load('X_train.npy').astype(np.float32)
     y_train = np.load('y_train.npy').astype(np.float32)
     
-    # Load Testing Data (The Untouched Vault)
     X_test = np.load('X_test.npy').astype(np.float32)
     y_test = np.load('y_test.npy').astype(np.float32)
     
-    # Create DataLoaders
     train_dataset = TensorDataset(torch.tensor(X_train), torch.tensor(y_train).view(-1, 1))
     train_dataloader = DataLoader(train_dataset, batch_size=256, shuffle=True)
     
     test_dataset = TensorDataset(torch.tensor(X_test), torch.tensor(y_test).view(-1, 1))
     test_dataloader = DataLoader(test_dataset, batch_size=256, shuffle=False)
     
-    # Initialize the model
     model = APTForecaster(input_size=5, hidden_size=64, num_layers=2, dropout_prob=0.3)
+    print("\nModel Architecture:")
+    print(model)
     
-    criterion = nn.BCELoss()
+    # --- THE CRITICAL FIX: Class Weights ---
+    # Weight = Negative Samples (399,608) / Positive Samples (192)
+    pos_weight = torch.tensor([2081.29])
+    
+    # BCEWithLogitsLoss combines Sigmoid and BCELoss in one mathematically stable class
+    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
     
     epochs = 3
-    print(f"\nStarting training for {epochs} epochs...")
+    print(f"\nStarting training on pure data for {epochs} epochs...")
     
     for epoch in range(epochs):
         epoch_loss = 0.0
@@ -116,7 +111,6 @@ def train_model():
                 
         print(f"--- Epoch {epoch+1} completed. Average Loss: {epoch_loss/len(train_dataloader):.4f} ---")
     
-    # Trigger the evaluation using the TEST DATALOADER
     evaluate_model(model, test_dataloader)
 
 if __name__ == "__main__":

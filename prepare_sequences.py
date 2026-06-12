@@ -1,7 +1,6 @@
 import pandas as pd
 import numpy as np
 from sklearn.preprocessing import LabelEncoder
-from imblearn.over_sampling import SMOTE
 from sklearn.model_selection import train_test_split
 
 def process_data(input_csv, seq_length=10):
@@ -33,34 +32,22 @@ def process_data(input_csv, seq_length=10):
     X = np.array(X)
     y = np.array(y)
     
-    # --- THE CRITICAL FIX: Train/Test Split BEFORE SMOTE ---
+    # Split into Train/Test - NO SMOTE APPLIED
     print("\nSplitting data into 80% Training and 20% Testing sets...")
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
     
-    print(f"Training set (Real Data): {pd.Series(y_train).value_counts().to_dict()}")
-    print(f"Testing set (Untouched Vault): {pd.Series(y_test).value_counts().to_dict()}")
+    print(f"Pure Training Set Reality Check: {pd.Series(y_train).value_counts().to_dict()}")
+    print(f"Pure Testing Set Reality Check: {pd.Series(y_test).value_counts().to_dict()}")
     
-    # Apply SMOTE ONLY to the training data
-    print("\nApplying SMOTE to balance the Training dataset...")
-    samples, time_steps, num_features = X_train.shape
-    X_train_flat = X_train.reshape((samples, time_steps * num_features))
-    
-    smote = SMOTE(random_state=42)
-    X_train_resampled_flat, y_train_resampled = smote.fit_resample(X_train_flat, y_train)
-    
-    X_train_resampled = X_train_resampled_flat.reshape((-1, time_steps, num_features))
-    
-    print(f"Training set after SMOTE: {pd.Series(y_train_resampled).value_counts().to_dict()}")
-    
-    # Save the isolated datasets
+    # Save the untouched, highly imbalanced tensors
     print("\nSaving final isolated tensors...")
-    np.save('X_train.npy', X_train_resampled)
-    np.save('y_train.npy', y_train_resampled)
-    np.save('X_test.npy', X_test)  # The pure test set
+    np.save('X_train.npy', X_train)
+    np.save('y_train.npy', y_train)
+    np.save('X_test.npy', X_test)  
     np.save('y_test.npy', y_test)
-    print("Successfully saved all tensor files.")
+    print("Successfully saved all pure tensor files.")
 
 if __name__ == "__main__":
     INPUT_CSV = "optc_parsed_sequences.csv"
