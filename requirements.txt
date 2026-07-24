@@ -1,4 +1,4 @@
-# Data Parsing and Manipulation
+﻿# Data Parsing and Manipulation
 pandas
 numpy
 ujson
@@ -16,3 +16,10 @@ torchaudio
 matplotlib
 seaborn
 jupyter
+
+# Testing
+pytest
+
+# Optional explainability backends
+shap
+lime

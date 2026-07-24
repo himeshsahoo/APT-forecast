@@ -5,3 +5,9 @@ __pycache__/
 # Large local datasets/artifacts
 *.npy
 AIA-1-25.ecar-last.json/
+# Runtime SOC monitor outputs
+alerts*.jsonl
+monitor_state*.json
+latest_soc_report*.md
+soc_report.md
+soc_report.json
