@@ -221,6 +221,24 @@ What each step does:
 | 4 | `train_ensemble.py` | Trains three LSTM models and combines their predictions. |
 | 5 | `test_model.py` | Evaluates the model using ROC-AUC, precision, recall, F1, MCC, threshold analysis, and plots. |
 
+### Latest Model Evaluation
+
+The saved model (`best_model.pt`) was evaluated on 49,975 held-out sequences using `test_model.py` (CPU, 2 September 2026).
+
+| Metric | Default threshold (0.5) | F1-optimized threshold (0.0006) |
+| --- | ---: | ---: |
+| Accuracy | 99.96% | 90.37% |
+| Precision | 0.00% | 0.39% |
+| Recall / sensitivity | 0.00% | 90.48% |
+| F1-score | 0.0000 | 0.0078 |
+| ROC-AUC | 0.9391 | 0.9391 |
+| Specificity | 100.00% | — |
+| Matthews correlation coefficient | 0.0000 | — |
+
+At the default threshold, the confusion matrix is: 49,954 true negatives, 0 false positives, 21 false negatives, and 0 true positives. The model therefore predicts every evaluated sequence as benign. Its high accuracy is caused by the highly imbalanced test set (only 21 malicious sequences, 0.04%) and **must not be treated as effective malicious-activity detection**. The optimized threshold greatly improves recall but precision and F1 remain very low, so retraining and threshold calibration are required before operational use.
+
+The generated evaluation chart is stored in `model_test_results.png`.
+
 ## SOC Intelligence Features
 
 APT Forecast now includes reusable SOC intelligence modules inside `src/apt_forecast/`.
@@ -298,6 +316,7 @@ Current limitations:
 
 - Realtime input is currently a parsed CSV, not direct live Windows/Sysmon/Zeek ingestion.
 - Labels are based on known OpTC red-team indicators.
+- The current saved model misses all malicious test samples at its default 0.5 decision threshold; its metrics are dominated by class imbalance. It requires retraining, calibration, and evaluation with precision-recall-focused metrics before deployment.
 - Feature encoding should be improved with categorical embeddings or hashing.
 - Encoders and model metadata should be persisted for reliable inference.
 - There is no web dashboard yet.
