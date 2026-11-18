@@ -1,207 +1,260 @@
 ﻿# APT Forecast
 
-APT Forecast is an AI-powered cybersecurity project that analyzes security events and tries to detect early signs of an Advanced Persistent Threat, or APT.
+![CI](https://github.com/himeshsahoo/APT-forecast/actions/workflows/ci.yml/badge.svg)
 
-An APT is not a normal virus that immediately damages a system. It is usually a slow, stealthy attack where the attacker enters a network, hides, studies the environment, steals credentials, moves to other machines, and may finally exfiltrate data. This project tries to identify those suspicious patterns from logs and explain what may be happening.
+APT Forecast reads security event logs and looks for signs of an Advanced Persistent Threat (APT). An APT is a slow, hidden attack. The attacker enters a network, stays hidden, steals credentials, moves between machines, and at the end takes data out.
 
-In simple terms:
+The project has four parts:
 
-```text
-Security logs go in
-        |
-        v
-AI + threat intelligence analyze them
-        |
-        v
-The system produces alerts, risk score, attack timeline, MITRE mapping, and response suggestions
+1. An **LSTM model** that scores sequences of events as benign or malicious.
+2. A **SOC engine** that turns events into an analyst report: risk score, MITRE ATT&CK mapping, attack timeline, next-stage forecast, and response advice.
+3. A **real-time monitor** that watches a growing event file and writes alerts.
+4. A **web API** (FastAPI + Docker) that runs on the cloud.
+
+**Live API:** https://apt-forecast.onrender.com
+**Test page:** https://apt-forecast.onrender.com/docs
+
+The API runs on the Render free plan. It sleeps when nobody uses it, so the first request can take about a minute.
+
+> **Status: research prototype.** The saved model finds almost no attacks at its default threshold (see [Model results](#model-results)). Do not use this project for real security decisions.
+
+---
+
+## Contents
+
+- [How it works](#how-it-works)
+- [Quick start](#quick-start)
+- [API reference](#api-reference)
+- [SOC engine](#soc-engine)
+- [Real-time monitor](#real-time-monitor)
+- [Machine learning pipeline](#machine-learning-pipeline)
+- [Model results](#model-results)
+- [Testing and CI](#testing-and-ci)
+- [Deployment](#deployment)
+- [Project structure](#project-structure)
+- [Limitations](#limitations)
+- [Roadmap](#roadmap)
+
+---
+
+## How it works
+
+```mermaid
+flowchart TD
+    A[Raw OpTC ECAR logs] --> B[parse_optc.py]
+    B --> C[optc_parsed_sequences.csv]
+    C --> D[prepare_sequences.py]
+    D --> E[X / y tensors]
+    E --> F[train_lstm.py / train_ensemble.py]
+    F --> G[best_model.pt]
+    C --> H[SOC engine]
+    H --> I[analyze_alerts.py]
+    H --> J[realtime_monitor.py]
+    H --> K[FastAPI /analyze]
+    G --> L[FastAPI /predict]
+    K --> M[Docker image]
+    L --> M
+    M --> N[Render]
 ```
 
-## What This Project Does
+The model and the SOC engine are separate on purpose. The SOC engine works on event tables. It does not need the model.
 
-APT Forecast currently has two main parts.
+---
 
-First, it has a machine learning pipeline. This part prepares security event sequences and trains LSTM-based models to classify activity as benign or malicious.
+## Quick start
 
-Second, it has a SOC monitoring layer. SOC means Security Operations Center. This part reads parsed security events, creates analyst-friendly alerts, maps suspicious behavior to MITRE ATT&CK techniques, estimates risk, predicts the likely next attacker stage, and recommends safe response actions.
+You need Python 3.10 or newer.
 
-The goal is to make the project look less like only a model-training experiment and more like a real AI security platform.
+### Run the API on your computer
 
-## What Problem It Solves
-
-Security teams receive huge amounts of logs. Most events are normal, but a few may be signs of attack. Looking through everything manually is difficult.
-
-APT Forecast helps by answering questions like:
-
-- Is this host showing malicious behavior?
-- What kind of attacker activity is this?
-- Which MITRE ATT&CK technique does it resemble?
-- How risky is the situation?
-- What is the attacker likely to do next?
-- What should a security analyst do now?
-
-Example output:
-
-```text
-240 malicious events across 1 host(s). Overall risk is 93.2% (Critical).
-
-Current Stage: Tool Transfer
-Predicted Next Stage: Data Exfiltration
-MITRE Technique: T1105 Ingress Tool Transfer
-Recommended Response: Quarantine transferred binaries, block suspicious destination, start forensic collection
+```bash
+git clone https://github.com/himeshsahoo/APT-forecast.git
+cd APT-forecast
+python -m venv .venv
 ```
 
-## Current Architecture
+Activate the environment. On Windows PowerShell:
 
-```text
-Raw OpTC ECAR logs
-        |
-        v
-parse_optc.py
-        |
-        v
-optc_parsed_sequences.csv
-        |
-        +--> prepare_sequences.py
-        |          |
-        |          v
-        |      X_train.npy / X_test.npy
-        |          |
-        |          v
-        |      train_lstm.py / train_ensemble.py
-        |          |
-        |          v
-        |      best_model.pt + evaluation plots
-        |
-        +--> analyze_alerts.py
-        |          |
-        |          v
-        |      soc_report.md + soc_report.json
-        |
-        +--> realtime_monitor.py
-                   |
-                   v
-               alerts.jsonl + latest_soc_report.md
+```powershell
+.venv\Scripts\Activate.ps1
 ```
 
-## Input Data
+On Linux or macOS:
 
-The current input is a parsed security event CSV file:
-
-```text
-optc_parsed_sequences.csv
+```bash
+source .venv/bin/activate
 ```
 
-The expected columns are:
+Install and start the API:
 
-| Column | Meaning |
+```bash
+pip install -r requirements-api.txt
+uvicorn api.main:app --reload
+```
+
+Open http://127.0.0.1:8000/docs.
+
+### Run with Docker
+
+```bash
+docker build -t apt-api .
+docker run -p 8000:10000 apt-api
+```
+
+Open http://127.0.0.1:8000/docs.
+
+### Make an offline SOC report
+
+```bash
+pip install -r requirements.txt
+python analyze_alerts.py --input optc_parsed_sequences.csv --output soc_report.md --json-output soc_report.json
+```
+
+---
+
+## API reference
+
+Base URL: `https://apt-forecast.onrender.com`
+
+| Route | Method | What it does |
+| --- | --- | --- |
+| `/health` | GET | Returns `{"status": "ok"}`. Used for health checks. |
+| `/predict` | POST | Runs the LSTM on one sequence of 10 events. Each event has 5 encoded numbers. |
+| `/analyze` | POST | Builds a SOC report from a list of events. |
+
+### `GET /health`
+
+```bash
+curl https://apt-forecast.onrender.com/health
+```
+
+```json
+{"status": "ok"}
+```
+
+### `POST /predict`
+
+The input is 10 rows. Each row has 5 numbers: the encoded `action`, `actor_process`, `target_process`, `dest_ip`, and `dest_port`.
+
+```bash
+curl -X POST https://apt-forecast.onrender.com/predict \
+  -H "Content-Type: application/json" \
+  -d '{"sequence": [[1,2,3,4,5],[1,2,3,4,5],[1,2,3,4,5],[1,2,3,4,5],[1,2,3,4,5],[1,2,3,4,5],[1,2,3,4,5],[1,2,3,4,5],[1,2,3,4,5],[1,2,3,4,5]]}'
+```
+
+```json
+{"malicious_probability": 0.0, "label": 0}
+```
+
+A wrong shape returns `422`.
+
+### `POST /analyze`
+
+The input is 1 to 5000 events.
+
+```bash
+curl -X POST https://apt-forecast.onrender.com/analyze \
+  -H "Content-Type: application/json" \
+  -d '{"events": [{"timestamp": "2019-09-23T09:11:03", "hostname": "host1", "action": "FLOW_START", "actor_process": "powershell.exe", "dest_ip": "10.0.0.5", "dest_port": "443", "is_malicious": 1}]}'
+```
+
+Short example of the answer:
+
+```json
+{
+  "executive_summary": "2 malicious events across 1 host(s). Overall risk is 72.3% (High).",
+  "risk": {"overall_risk": 72.3, "severity": "High", "alert_count": 2},
+  "forecast": {"current_stage": "Execution", "predicted_next_stage": "Privilege Escalation", "probability": 0.87},
+  "mitre": [{"id": "T1059", "name": "Command and Scripting Interpreter", "tactic": "Execution", "count": 2}],
+  "recommended_responses": [{"action": "Alert administrator", "mode": "recommend"}]
+}
+```
+
+**Important:** `/analyze` does not run the model. It trusts the `is_malicious` value in each event.
+
+---
+
+## SOC engine
+
+The SOC engine is in `src/apt_forecast/`.
+
+| Module | Purpose |
 | --- | --- |
-| `timestamp` | When the event happened. |
-| `hostname` | Machine where the event happened. |
-| `action` | Event type, such as `PROCESS_CREATE`, `MODULE_LOAD`, or `FILE_READ`. |
-| `actor_process` | Process that caused the event. |
-| `target_process` | Process or file affected by the event. |
-| `dest_ip` | Destination IP address for network activity. |
-| `dest_port` | Destination port for network activity. |
-| `is_malicious` | `1` for malicious, `0` for benign. |
+| `soc_engine.py` | Builds the risk score, timeline, forecast, and response advice. |
+| `threat_intel.py` | Maps events to MITRE ATT&CK techniques and attack stages. |
+| `explainability.py` | Gives rule-based reasons. Has optional SHAP and LIME hooks. |
 
-Example:
+A report has these parts:
 
-```csv
-timestamp,hostname,action,actor_process,target_process,dest_ip,dest_port,is_malicious
-2019-09-23T09:11:03.11-04:00,SysClient0004.systemia.com,THREAD_CREATE,None,None,None,None,0
-```
+- Executive summary
+- Risk score, severity, likelihood, business impact, and confidence
+- MITRE ATT&CK techniques with the events that match
+- Attack timeline
+- Current stage and predicted next stage
+- Recommended response actions
 
-Right now the CSV is created by `parse_optc.py` from OpTC ECAR logs. In a more production-ready version, the same format can be produced by live collectors from Sysmon, Zeek, Suricata, Windows Event Logs, or Linux audit logs.
+The attack stages are, in order: Execution, Credential Dumping, Privilege Escalation, Lateral Movement, Tool Transfer, and Data Exfiltration.
 
-## How Realtime Monitoring Works
+**Safety:** The project never blocks IPs, ends processes, or changes accounts. Every response action is `recommend` (an analyst must do it) or `simulate` (the system only describes it).
 
-The realtime monitor is a long-running loop. It does not scan your computer like antivirus software yet. Instead, it watches an append-only parsed event CSV.
+---
 
-Run it with:
+## Real-time monitor
+
+`realtime_monitor.py` watches an event CSV file that grows over time. It is not an antivirus scan of your computer.
 
 ```bash
 python realtime_monitor.py --input optc_parsed_sequences.csv --poll-seconds 5
 ```
 
-What happens internally:
+Each cycle, the monitor:
 
-```text
-Start monitor
-   |
-   v
-Read monitor_state.json
-   |
-   v
-Find the last processed row
-   |
-   v
-Read only new rows from the CSV
-   |
-   v
-Analyze the new events
-   |
-   v
-Calculate risk and map MITRE techniques
-   |
-   v
-If risk is high enough, write an alert
-   |
-   v
-Wait a few seconds and repeat
-```
+1. Reads the last processed row from `monitor_state.json`.
+2. Reads only the new rows.
+3. Builds a SOC report for them.
+4. Writes an alert if the risk is at or above the threshold (default 45).
+5. Waits, then repeats.
 
-The monitor creates these runtime files:
-
-| File | Purpose |
-| --- | --- |
-| `monitor_state.json` | Stores the last processed row so old events are not analyzed again. |
-| `alerts.jsonl` | Stores alert history in machine-readable JSON lines format. |
-| `latest_soc_report.md` | Stores the newest human-readable SOC report. |
-
-Useful realtime commands:
+Useful options:
 
 ```bash
-# Process the file from the beginning once, then stop
 python realtime_monitor.py --from-start --once
-
-# Run continuously and check every 2 seconds
 python realtime_monitor.py --poll-seconds 2
-
-# Only create alerts when risk is at least 70%
 python realtime_monitor.py --risk-threshold 70
 ```
 
-## Offline SOC Report
-
-If you do not want the long-running monitor, you can generate one report manually:
-
-```bash
-python analyze_alerts.py --input optc_parsed_sequences.csv --output soc_report.md --json-output soc_report.json
-```
-
-This produces:
+Output files:
 
 | File | Purpose |
 | --- | --- |
-| `soc_report.md` | Human-readable incident report. |
-| `soc_report.json` | Machine-readable structured report. |
+| `monitor_state.json` | The last processed row. |
+| `alerts.jsonl` | Alert history, one JSON object per line. |
+| `latest_soc_report.md` | The newest report. |
 
-The report includes:
+---
 
-- Executive summary
-- Overall risk score
-- Severity, likelihood, business impact, and confidence
-- MITRE ATT&CK mapping
-- Attack timeline
-- Predicted next attacker stage
-- Human-readable detection reasons
-- Recommended response actions
+## Machine learning pipeline
 
-## Machine Learning Pipeline
+### Data
 
-The project also includes an LSTM-based model pipeline.
+The data comes from the DARPA Transparent Computing **OpTC** dataset (ECAR logs). `parse_optc.py` turns raw logs into a CSV with these columns:
 
-Run the full pipeline like this:
+| Column | Meaning |
+| --- | --- |
+| `timestamp` | When the event happened |
+| `hostname` | The machine |
+| `action` | Event type, such as `PROCESS_CREATE` or `FLOW_START` |
+| `actor_process` | The process that caused the event |
+| `target_process` | The process or file that was affected |
+| `dest_ip` | Destination IP for network events |
+| `dest_port` | Destination port for network events |
+| `is_malicious` | `1` for malicious, `0` for benign |
+
+The labels come from a list of known red-team indicators and compromised hosts in the OpTC ground truth. The raw logs are not in this repository.
+
+The parsed data has about 500,000 events. Only 240 are malicious. The classes are very unbalanced.
+
+### Steps
 
 ```bash
 python parse_optc.py
@@ -211,151 +264,113 @@ python train_ensemble.py
 python test_model.py
 ```
 
-What each step does:
-
-| Step | Script | Explanation |
+| Step | Script | What it does |
 | --- | --- | --- |
-| 1 | `parse_optc.py` | Reads raw OpTC ECAR JSON logs and converts them into a clean CSV. |
-| 2 | `prepare_sequences.py` | Groups events by host and time, then creates fixed-length event sequences. |
-| 3 | `train_lstm.py` | Trains the main bidirectional LSTM model. |
-| 4 | `train_ensemble.py` | Trains three LSTM models and combines their predictions. |
-| 5 | `test_model.py` | Evaluates the model using ROC-AUC, precision, recall, F1, MCC, threshold analysis, and plots. |
+| 1 | `parse_optc.py` | Reads raw logs. Writes the event CSV with labels. |
+| 2 | `prepare_sequences.py` | Groups events by host and time. Makes sequences of 10 events. Splits 80% train and 20% test. |
+| 3 | `train_lstm.py` | Trains a bidirectional LSTM (2 layers, 128 hidden units). Saves `best_model.pt`. |
+| 4 | `train_ensemble.py` | Trains 3 LSTM models and combines them. |
+| 5 | `test_model.py` | Computes ROC-AUC, precision, recall, F1, MCC, and threshold analysis. |
 
-### Latest Model Evaluation
+The API uses `best_model.pt` only.
 
-The saved model (`best_model.pt`) was evaluated on 49,975 held-out sequences using `test_model.py` (CPU, 2 September 2026).
+---
 
-| Metric | Default threshold (0.5) | F1-optimized threshold (0.0006) |
+## Model results
+
+These numbers are from `test_model.py` on 49,975 held-out sequences. Only 21 of them are malicious (0.04%).
+
+| Metric | Threshold 0.5 | Best-F1 threshold (0.0006) |
 | --- | ---: | ---: |
 | Accuracy | 99.96% | 90.37% |
 | Precision | 0.00% | 0.39% |
-| Recall / sensitivity | 0.00% | 90.48% |
-| F1-score | 0.0000 | 0.0078 |
+| Recall | 0.00% | 90.48% |
+| F1 | 0.0000 | 0.0078 |
 | ROC-AUC | 0.9391 | 0.9391 |
-| Specificity | 100.00% | — |
-| Matthews correlation coefficient | 0.0000 | — |
 
-At the default threshold, the confusion matrix is: 49,954 true negatives, 0 false positives, 21 false negatives, and 0 true positives. The model therefore predicts every evaluated sequence as benign. Its high accuracy is caused by the highly imbalanced test set (only 21 malicious sequences, 0.04%) and **must not be treated as effective malicious-activity detection**. The optimized threshold greatly improves recall but precision and F1 remain very low, so retraining and threshold calibration are required before operational use.
+At threshold 0.5, the model calls every sequence benign. The high accuracy comes only from the class imbalance. At the best-F1 threshold, recall is high but precision is very low, so there are many false alarms.
 
-The generated evaluation chart is stored in `model_test_results.png`.
+The model ranks sequences better than random (ROC-AUC about 0.94). But it is not ready for real detection. It needs retraining, better features, and threshold calibration.
 
-## SOC Intelligence Features
+The chart is in `model_test_results.png`.
 
-APT Forecast now includes reusable SOC intelligence modules inside `src/apt_forecast/`.
+---
 
-| Module | Purpose |
+## Testing and CI
+
+Run the tests:
+
+```bash
+pip install pytest httpx
+pytest
+```
+
+The tests cover the SOC engine, the real-time monitor, and the API routes. `pytest.ini` sets the import path.
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on each push to `main` and on each pull request:
+
+1. **test:** installs the API dependencies and runs `pytest`.
+2. **docker:** builds the Docker image to check that it builds.
+
+---
+
+## Deployment
+
+- The API is in `api/` (FastAPI).
+- The `Dockerfile` uses `python:3.11-slim`. It installs the CPU-only version of PyTorch to keep the image small.
+- Render builds the image from the `main` branch. It uses `/health` as the health check.
+- Render sets the `PORT` variable. The container reads it.
+
+---
+
+## Project structure
+
+| Path | Description |
 | --- | --- |
-| `soc_engine.py` | Builds risk scores, timelines, reports, forecasts, and response recommendations. |
-| `threat_intel.py` | Maps suspicious activity to MITRE ATT&CK techniques and attack stages. |
-| `explainability.py` | Provides rule-based explanations and optional SHAP/LIME hooks. |
+| `api/` | FastAPI service (`main.py`) and model class (`model.py`) |
+| `src/apt_forecast/` | SOC engine, MITRE mapping, explanations |
+| `tests/` | Unit and API tests |
+| `.github/workflows/ci.yml` | CI workflow |
+| `Dockerfile`, `.dockerignore` | Container build |
+| `requirements-api.txt` | Dependencies for the API |
+| `requirements.txt` | Dependencies for training and research |
+| `parse_optc.py` | Log parser and indicator-based labeler |
+| `prepare_sequences.py` | Sequence builder |
+| `train_lstm.py`, `train_ensemble.py` | Model training |
+| `test_model.py` | Model evaluation |
+| `analyze_alerts.py` | Offline SOC report |
+| `realtime_monitor.py` | Real-time monitor |
+| `best_model.pt` | Saved model used by the API |
+| `docs/PROJECT_REVIEW.md` | Technical review and roadmap |
 
-The SOC engine is intentionally separate from the training scripts. This makes it easier to later add a FastAPI backend, dashboard, database, or live log collector without rewriting the model code.
+---
 
-## Safety Note
+## Limitations
 
-The project does not automatically block IPs, kill processes, disable accounts, or modify a real system.
+- **The model is weak.** It finds almost no attacks at the default threshold. See [Model results](#model-results).
+- **`/predict` needs encoded input.** The label encoders from training are not saved, so the API cannot take raw logs.
+- **`/analyze` does not use the model.** It uses the `is_malicious` value in the input.
+- **The next-stage forecast is a fixed rule.** It moves one step forward in the stage order. The probability comes from a formula. It is not learned from data.
+- **The risk score is a hand-made formula.** It is not calibrated against real incidents.
+- **Labels come from known indicators.** The model can learn file names and not attacker behavior.
+- **Label encoding treats categories as ordered numbers.** Embeddings or hashing would be better.
+- **The data split is random.** A split by time and host would be stricter.
+- **Input is a CSV file.** There is no live collector for Sysmon, Zeek, or Windows Event Logs.
+- **There is no dashboard and no database.**
 
-All response actions are currently either:
-
-- `recommend`: show the analyst what should be done
-- `simulate`: describe what the system would do in a controlled SOC workflow
-
-This is intentional. In cybersecurity software, automatic destructive actions should require strict approval and policy controls.
-
-## Installation
-
-Create and activate a virtual environment:
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-```
-
-Install dependencies:
-
-```bash
-pip install -r requirements.txt
-```
-
-Run tests:
-
-```bash
-python -m unittest tests.test_soc_engine_unittest tests.test_realtime_monitor_unittest
-```
-
-## Project Files
-
-| File or Folder | Description |
-| --- | --- |
-| `parse_optc.py` | Raw log parser and IOC-based labeler. |
-| `prepare_sequences.py` | Sequence dataset builder for ML training. |
-| `train_lstm.py` | Main LSTM training script. |
-| `train_ensemble.py` | Ensemble model training script. |
-| `test_model.py` | Evaluation and visualization script. |
-| `analyze_alerts.py` | Offline SOC report generator. |
-| `realtime_monitor.py` | Realtime append-only CSV monitoring loop. |
-| `src/apt_forecast/` | Reusable SOC intelligence package. |
-| `tests/` | Unit tests for SOC reporting and realtime monitoring. |
-| `docs/PROJECT_REVIEW.md` | Full technical review and roadmap. |
-
-## How To Explain This Project
-
-A simple explanation:
-
-> APT Forecast is an AI cybersecurity platform that analyzes security logs to detect advanced persistent threat behavior. It trains LSTM models on event sequences, then adds a SOC intelligence layer that explains alerts using MITRE ATT&CK, calculates risk, builds attack timelines, forecasts the next attacker stage, and recommends safe response actions.
-
-A more technical explanation:
-
-> The system parses OpTC ECAR telemetry into structured events, creates host-aware temporal sequences, trains bidirectional LSTM and ensemble models for malicious activity detection, and provides a streaming SOC monitor that processes newly appended events with checkpointing. The analyst layer maps detections to MITRE ATT&CK, produces risk-scored incident reports, and keeps automated responses in simulation mode for safety.
-
-## Current Limitations
-
-This is still a research prototype, not a finished enterprise product.
-
-Current limitations:
-
-- Realtime input is currently a parsed CSV, not direct live Windows/Sysmon/Zeek ingestion.
-- Labels are based on known OpTC red-team indicators.
-- The current saved model misses all malicious test samples at its default 0.5 decision threshold; its metrics are dominated by class imbalance. It requires retraining, calibration, and evaluation with precision-recall-focused metrics before deployment.
-- Feature encoding should be improved with categorical embeddings or hashing.
-- Encoders and model metadata should be persisted for reliable inference.
-- There is no web dashboard yet.
-- There is no FastAPI backend yet.
-- SHAP and LIME are optional hooks, not fully integrated into every model prediction.
+---
 
 ## Roadmap
 
-Version 2.0:
+**Next**
+- Save the label encoders and feature metadata, so `/predict` accepts raw events.
+- Split train and test by time and by host.
+- Retrain with class weights or sampling, and calibrate the threshold.
+- Deploy the same Docker image to Google Cloud Run.
 
-- SOC report generation
-- MITRE ATT&CK mapping
-- Risk scoring
-- Realtime CSV monitor
-- Safe response recommendations
-
-Version 2.1:
-
-- Persist encoders and feature metadata
-- Add chronological host-aware train/test splitting
-- Add stronger model explanations
-- Add more parser and inference tests
-
-Version 2.2:
-
-- Add FastAPI inference API
-- Add dashboard with threat count, risk score, timeline, MITRE mapping, and recent alerts
-- Add SQLite or PostgreSQL alert storage
-
-Version 3.0:
-
-- Add Transformer-based temporal model
-- Add MLflow experiment tracking
-- Add Docker deployment
-- Add CI/CD checks
-
-Version 4.0:
-
-- Add live Sysmon, Zeek, Suricata, or Windows Event Log collectors
-- Add threat intelligence enrichment for IPs, domains, CVEs, malware families, and threat actors
-- Add graph neural networks for attack-path modeling
-- Add reinforcement learning for simulated response planning
+**Later**
+- Dashboard with risk cards, timeline, and MITRE view.
+- SQLite or PostgreSQL storage for alerts.
+- Transformer-based temporal model with categorical embeddings.
+- Experiment tracking with MLflow.
+- Live log collectors and threat-intelligence enrichment.
